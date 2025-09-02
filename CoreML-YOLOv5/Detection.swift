@@ -37,12 +37,9 @@ extension ViewController {
                 let flippedBox = CGRect(x: detectResult.boundingBox.minX, y: 1 - detectResult.boundingBox.maxY, width: detectResult.boundingBox.width, height: detectResult.boundingBox.height)
                 let box = VNImageRectForNormalizedRect(flippedBox, Int(ciImage.extent.width), Int(ciImage.extent.height))
                 let confidence = detectResult.confidence
-                var label:String = ""
-                if let recognizedResult = detectResult as? VNRecognizedObjectObservation, let classLabel = recognizedResult.labels.first?.identifier {
-                    label = classLabel
-                }
-                let labelIndex = classLabels.firstIndex(of: label)!
-                let detection = Detection(box: box, confidence: confidence, label: label, color: colorSet[labelIndex])
+                // Assume a single class "golfball" for all detections
+                let label = "golfball"
+                let detection = Detection(box: box, confidence: confidence, label: label, color: .red)
                 detections.append(detection)
             }
                 let newImage = drawRectOnImage(detections, ciImage)
@@ -78,13 +75,9 @@ extension ViewController {
                 // ０〜１で返ってきた座標を画像の座標に非正規化
                 let box = VNImageRectForNormalizedRect(flippedBox, Int(image.size.width), Int(image.size.height))
                 let confidence = detectResult.confidence
-                var label:String = ""
-                if let recognizedResult = detectResult as? VNRecognizedObjectObservation, let classLabel = recognizedResult.labels.first?.identifier {
-                    label = classLabel
-                }
-                // ランダムな色の配列から、ラベルのインデックスのものを選ぶ。色を指定したい場合はcolorSetをハードコードしてください。
-                let labelIndex = Int.random(in: 0...80)
-                let detection = Detection(box: box, confidence: confidence, label: label, color: colorSet[labelIndex])
+                // Assume a single class "golfball" for all detections
+                let label = "golfball"
+                let detection = Detection(box: box, confidence: confidence, label: label, color: .red)
                 detections.append(detection)
             }
             DispatchQueue.main.async { [weak self] in
@@ -129,3 +122,4 @@ extension ViewController {
 //                }
 //        }
 }
+

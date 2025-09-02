@@ -14,9 +14,11 @@ class ViewController: UIViewController, PHPickerViewControllerDelegate {
 
     @IBOutlet weak var messageLabel: UILabel!
     
+    var spinner: UIActivityIndicatorView!
+    
     lazy var coreMLRequest:VNCoreMLRequest? = {
         do {
-            let model = try yolov5s(configuration: MLModelConfiguration()).model
+            let model = try GolfBall2(configuration: MLModelConfiguration()).model
             let vnCoreMLModel = try VNCoreMLModel(for: model)
             let request = VNCoreMLRequest(model: vnCoreMLModel)
             request.imageCropAndScaleOption = .scaleFill
@@ -27,7 +29,7 @@ class ViewController: UIViewController, PHPickerViewControllerDelegate {
         }
     }()
     
-    let classLabels = ["person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch", "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"]
+    let classLabels = ["golfball"]
     
     let colorSet:[UIColor] = {
         var colorSet:[UIColor] = []
@@ -47,7 +49,7 @@ class ViewController: UIViewController, PHPickerViewControllerDelegate {
         case video
     }
     
-    var mediaMode:MediaMode = .photo
+    var mediaMode:MediaMode = .video
 
     var initializeTimer:Timer?
     var frame = 0
@@ -56,6 +58,10 @@ class ViewController: UIViewController, PHPickerViewControllerDelegate {
     
     override func viewDidLoad() {
         super.viewDidLoad()
+        spinner = UIActivityIndicatorView(style: .large)
+        spinner.center = view.center
+        spinner.hidesWhenStopped = true
+        view.addSubview(spinner)
         presentPhPicker()
     }
     
@@ -90,6 +96,10 @@ class ViewController: UIViewController, PHPickerViewControllerDelegate {
             guard let result = results.first else { return }
             guard let typeIdentifier = result.itemProvider.registeredTypeIdentifiers.first else { return }
             if result.itemProvider.hasItemConformingToTypeIdentifier(typeIdentifier) {
+                DispatchQueue.main.async { [weak self] in
+                    self?.spinner.startAnimating()
+                    self?.spinner.isHidden = false
+                }
                 result.itemProvider.loadFileRepresentation(forTypeIdentifier: typeIdentifier) { [weak self] (url, error) in
                     if let error = error { print("*** error: \(error)") }
                     let start = Date()
@@ -98,23 +108,45 @@ class ViewController: UIViewController, PHPickerViewControllerDelegate {
                     }
                     if let url = url as? URL {
                         result.itemProvider.loadItem(forTypeIdentifier: typeIdentifier, options: nil) { (url, error) in
-                            let procceessed = self?.applyProcessingOnVideo(videoURL: url as! URL) { ciImage in
-                                let visualized = self?.detectPartsVisualizing(ciImage: ciImage)
-                                return visualized
-                            } _: { err, processedVideoURL in
+                            let procceessed = self?.applyProcessingOnVideo(videoURL: url as! URL, { ciImage in
+                                guard let safeSelf = self else { return nil }
+                                guard let coreMLRequest = safeSelf.coreMLRequest else { return nil }
+                                let handler = VNImageRequestHandler(ciImage: ciImage, options: [:])
+                                do {
+                                    try handler.perform([coreMLRequest])
+                                    guard let detectResults = coreMLRequest.results as? [VNDetectedObjectObservation] else { return (ciImage, []) }
+                                    var detections: [Detection] = []
+                                    for detectResult in detectResults {
+                                        let flippedBox = CGRect(x: detectResult.boundingBox.minX, y: 1 - detectResult.boundingBox.maxY, width: detectResult.boundingBox.width, height: detectResult.boundingBox.height)
+                                        let box = VNImageRectForNormalizedRect(flippedBox, Int(ciImage.extent.width), Int(ciImage.extent.height))
+                                        let confidence = detectResult.confidence
+                                        let label = "golfball"
+                                        let detection = Detection(box: box, confidence: confidence, label: label, color: .red)
+                                        detections.append(detection)
+                                    }
+                                    if let newImage = safeSelf.drawRectOnImage(detections, ciImage) {
+                                        return (newImage.resize(as: ciImage.extent.size), detections)
+                                    }
+                                    return (ciImage, detections)
+                                } catch {
+                                    print(error)
+                                    return (ciImage, [])
+                                }
+                            }, { err, processedVideoURL in
                                 let end = Date()
                                 let diff = end.timeIntervalSince(start)
                                 print(diff)
                                 let player = AVPlayer(url: processedVideoURL!)
                                 DispatchQueue.main.async {
                                     self?.messageLabel.isHidden = true
+                                    self?.spinner.stopAnimating()
                                     let controller = AVPlayerViewController()
                                     controller.player = player
                                     self?.present(controller, animated: true) {
                                         player.play()
                                     }
                                 }
-                            }
+                            })
                         }
                     }
                 }
@@ -144,16 +176,7 @@ class ViewController: UIViewController, PHPickerViewControllerDelegate {
     }
     
     func presentPhPicker(){
-        let alert = UIAlertController(title: "Select Media", message: "", preferredStyle: .actionSheet)
-        let imageAction = UIAlertAction(title: "Image", style: .default) { action in
-            var configuration = PHPickerConfiguration()
-            configuration.selectionLimit = 1
-            configuration.filter = .images
-            let picker = PHPickerViewController(configuration: configuration)
-            picker.delegate = self
-            self.mediaMode = .photo
-            self.present(picker, animated: true)
-        }
+        let alert = UIAlertController(title: "Select Video", message: "", preferredStyle: .actionSheet)
         
         let videoAction = UIAlertAction(title: "Video", style: .default) { action in
             var configuration = PHPickerConfiguration()
@@ -164,7 +187,6 @@ class ViewController: UIViewController, PHPickerViewControllerDelegate {
             self.mediaMode = .video
             self.present(picker, animated: true)
         }
-        alert.addAction(imageAction)
         alert.addAction(videoAction)
         self.present(alert, animated: true)
     }
@@ -195,3 +217,4 @@ struct Detection {
     let label:String?
     let color:UIColor
 }
+
