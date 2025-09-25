@@ -18,7 +18,7 @@ class ViewController: UIViewController, PHPickerViewControllerDelegate {
     
     lazy var coreMLRequest:VNCoreMLRequest? = {
         do {
-            let model = try GolfBall2(configuration: MLModelConfiguration()).model
+            let model = try golfballyolov8n(configuration: MLModelConfiguration()).model
             let vnCoreMLModel = try VNCoreMLModel(for: model)
             let request = VNCoreMLRequest(model: vnCoreMLModel)
             request.imageCropAndScaleOption = .scaleFill
