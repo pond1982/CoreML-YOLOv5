@@ -63,7 +63,7 @@ extension ViewController {
         }
     }
     
-    func detect(image:UIImage) {
+    func detectUsingSAHI(image: UIImage) {
         guard let ciImage = CIImage(image: image) else { fatalError("Image failed.") }
         let start = Date()
         // Run SAHI tiling detection
@@ -113,3 +113,4 @@ extension ViewController {
 //                }
 //        }
 }
+

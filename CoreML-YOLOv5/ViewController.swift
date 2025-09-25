@@ -82,6 +82,12 @@ class ViewController: UIViewController, PHPickerViewControllerDelegate {
     var sahiIoUThreshold: CGFloat = 0.5     // 0.0 ... 1.0
     var sahiScoreThreshold: Float = 0.05    // 0.0 ... 1.0
     var sahiMaxTilesPerFrame: Int = 16
+
+    // Region-aware SAHI parameters for the TOP half (smaller objects)
+    var sahiTileWidthTop: CGFloat = 320
+    var sahiTileHeightTop: CGFloat = 320
+    var sahiOverlapTop: CGFloat = 0.30
+    var sahiScoreThresholdTop: Float = 0.03
     
     // Run detection on the full frame (no tiling). Handles both VNRecognizedObjectObservation and VNDetectedObjectObservation.
     func detectFullFrame(ciImage: CIImage,
@@ -258,6 +264,103 @@ class ViewController: UIViewController, PHPickerViewControllerDelegate {
         return nonMaxSuppression(allDetections, iouThreshold: iouThreshold, scoreThreshold: scoreThreshold)
     }
     
+    // Region-aware SAHI: use smaller tiles on the TOP half for tiny objects, keep existing params on the BOTTOM half
+    func detectOnTilesRegionAware(ciImage: CIImage,
+                                  iouThreshold: CGFloat = 0.5) -> [Detection] {
+        guard let coreMLRequest = coreMLRequest else { return [] }
+
+        let width = ciImage.extent.width
+        let height = ciImage.extent.height
+        let midY = floor(height / 2)
+
+        let bottomRect = CGRect(x: 0, y: 0, width: width, height: midY)
+        let topRect = CGRect(x: 0, y: midY, width: width, height: height - midY)
+
+        func processRegion(rect: CGRect,
+                           tileSize: CGSize,
+                           overlap: CGFloat,
+                           scoreThreshold: Float) -> [Detection] {
+            let regionImage = ciImage
+                .cropped(to: rect)
+                .transformed(by: CGAffineTransform(translationX: -rect.origin.x, y: -rect.origin.y))
+
+            var tiles = makeTiles(for: regionImage, tileSize: tileSize, overlap: overlap)
+            if tiles.count > sahiMaxTilesPerFrame {
+                let scale = ceil(sqrt(Double(tiles.count) / Double(max(1, sahiMaxTilesPerFrame))))
+                let newWidth = min(regionImage.extent.width, tileSize.width * CGFloat(scale))
+                let newHeight = min(regionImage.extent.height, tileSize.height * CGFloat(scale))
+                tiles = makeTiles(for: regionImage,
+                                  tileSize: CGSize(width: newWidth, height: newHeight),
+                                  overlap: 0.1)
+            }
+
+            var dets: [Detection] = []
+            for (tileImage, origin) in tiles {
+                let handler = VNImageRequestHandler(ciImage: tileImage, options: [:])
+                do {
+                    try handler.perform([coreMLRequest])
+
+                    if let results = coreMLRequest.results as? [VNRecognizedObjectObservation] {
+                        for r in results {
+                            let flipped = CGRect(x: r.boundingBox.minX,
+                                                 y: 1 - r.boundingBox.maxY,
+                                                 width: r.boundingBox.width,
+                                                 height: r.boundingBox.height)
+                            let inTile = VNImageRectForNormalizedRect(flipped,
+                                                                      Int(tileImage.extent.width),
+                                                                      Int(tileImage.extent.height))
+                            let inRegion = inTile.offsetBy(dx: origin.x, dy: origin.y)
+                            let inFull = inRegion.offsetBy(dx: rect.origin.x, dy: rect.origin.y)
+                            let label = r.labels.first?.identifier ?? "golfball"
+                            if r.confidence >= scoreThreshold {
+                                dets.append(Detection(box: inFull, confidence: r.confidence, label: label, color: .red))
+                            }
+                        }
+                    } else if let results = coreMLRequest.results as? [VNDetectedObjectObservation] {
+                        for r in results {
+                            let flipped = CGRect(x: r.boundingBox.minX,
+                                                 y: 1 - r.boundingBox.maxY,
+                                                 width: r.boundingBox.width,
+                                                 height: r.boundingBox.height)
+                            let inTile = VNImageRectForNormalizedRect(flipped,
+                                                                      Int(tileImage.extent.width),
+                                                                      Int(tileImage.extent.height))
+                            let inRegion = inTile.offsetBy(dx: origin.x, dy: origin.y)
+                            let inFull = inRegion.offsetBy(dx: rect.origin.x, dy: rect.origin.y)
+                            if r.confidence >= scoreThreshold {
+                                dets.append(Detection(box: inFull, confidence: r.confidence, label: "golfball", color: .red))
+                            }
+                        }
+                    }
+                } catch {
+                    print("Region tile detect error: \(error)")
+                }
+            }
+            return dets
+        }
+
+        // Update UI to indicate region-aware SAHI
+        DispatchQueue.main.async { [weak self] in
+            self?.messageLabel.isHidden = false
+            self?.messageLabel.text = "SAHI (region-aware): smaller tiles on top half"
+        }
+
+        let bottomDetections = processRegion(rect: bottomRect,
+                                             tileSize: CGSize(width: sahiTileWidth, height: sahiTileHeight),
+                                             overlap: sahiOverlap,
+                                             scoreThreshold: sahiScoreThreshold)
+
+        let topDetections = processRegion(rect: topRect,
+                                          tileSize: CGSize(width: sahiTileWidthTop, height: sahiTileHeightTop),
+                                          overlap: sahiOverlapTop,
+                                          scoreThreshold: sahiScoreThresholdTop)
+
+        let all = bottomDetections + topDetections
+        return nonMaxSuppression(all,
+                                 iouThreshold: iouThreshold,
+                                 scoreThreshold: min(sahiScoreThreshold, sahiScoreThresholdTop))
+    }
+
     func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
         picker.dismiss(animated: true)
         messageLabel.isHidden = true
@@ -310,12 +413,7 @@ class ViewController: UIViewController, PHPickerViewControllerDelegate {
                                 if !full.isEmpty {
                                     return (ciImage, full)
                                 }
-                                let tileSize = CGSize(width: safeSelf.sahiTileWidth, height: safeSelf.sahiTileHeight)
-                                let sahi = safeSelf.detectOnTiles(ciImage: ciImage,
-                                                                  tileSize: tileSize,
-                                                                  overlap: safeSelf.sahiOverlap,
-                                                                  iouThreshold: safeSelf.sahiIoUThreshold,
-                                                                  scoreThreshold: safeSelf.sahiScoreThreshold)
+                                let sahi = safeSelf.detectOnTilesRegionAware(ciImage: ciImage, iouThreshold: safeSelf.sahiIoUThreshold)
                                 return (ciImage, sahi)
                             }, { err, processedVideoURL in
                                 let end = Date()
@@ -342,6 +440,32 @@ class ViewController: UIViewController, PHPickerViewControllerDelegate {
         }
     }
     
+    func detect(image: UIImage) {
+        guard let ciImage = CIImage(image: image) else { return }
+
+        // Run full-frame detection first
+        let fullDetections = detectFullFrame(ciImage: ciImage,
+                                             iouThreshold: sahiIoUThreshold,
+                                             scoreThreshold: sahiScoreThreshold)
+
+        let detections: [Detection]
+        if !fullDetections.isEmpty {
+            detections = fullDetections
+        } else {
+            // Run region-aware SAHI: smaller tiles on top half for tiny objects
+            detections = detectOnTilesRegionAware(ciImage: ciImage, iouThreshold: sahiIoUThreshold)
+        }
+
+        DispatchQueue.main.async {
+            self.messageLabel.isHidden = true
+            if let newImage = self.drawRectOnImage(detections, ciImage) {
+                self.imageView.image = UIImage(ciImage: newImage)
+            } else {
+                self.imageView.image = UIImage(ciImage: ciImage)
+            }
+        }
+    }
+
     @IBAction func selectImageButtonTapped(_ sender: UIButton) {
         presentPhPicker()
     }
