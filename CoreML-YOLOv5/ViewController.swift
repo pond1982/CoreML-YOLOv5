@@ -13,8 +13,17 @@ import AVKit
 class ViewController: UIViewController, PHPickerViewControllerDelegate {
 
     @IBOutlet weak var messageLabel: UILabel!
+    @IBOutlet weak var imageView: UIImageView!
     
     var spinner: UIActivityIndicatorView!
+    
+    enum MediaMode {
+        case photo
+        case video
+    }
+
+    var mediaMode: MediaMode = .video
+    var initializeTimer: Timer?
     
     lazy var coreMLRequest:VNCoreMLRequest? = {
         do {
@@ -43,6 +52,26 @@ class ViewController: UIViewController, PHPickerViewControllerDelegate {
     }()
     
     var ciContext = CIContext()
+    
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        // Configure spinner if not set via storyboard
+        if spinner == nil {
+            let spinner = UIActivityIndicatorView(style: .large)
+            spinner.translatesAutoresizingMaskIntoConstraints = false
+            spinner.hidesWhenStopped = true
+            view.addSubview(spinner)
+            NSLayoutConstraint.activate([
+                spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor)
+            ])
+            self.spinner = spinner
+        } else {
+            spinner.hidesWhenStopped = true
+        }
+        // Hide message label by default
+        messageLabel.isHidden = true
+    }
     
     // SAHI tuning parameters (can be adjusted via UI)
     var sahiTileWidth: CGFloat = 640
@@ -313,7 +342,13 @@ class ViewController: UIViewController, PHPickerViewControllerDelegate {
     }
     
     @IBAction func saveButtonTapped(_ sender: UIButton) {
-        UIImageWriteToSavedPhotosAlbum(imageView.image!, self, #selector(image(_:didFinishSavingWithError:contextInfo:)), nil)
+        guard let image = imageView.image else {
+            let ac = UIAlertController(title: "No Image", message: "There is no image to save.", preferredStyle: .alert)
+            ac.addAction(UIAlertAction(title: "OK", style: .default))
+            present(ac, animated: true)
+            return
+        }
+        UIImageWriteToSavedPhotosAlbum(image, self, #selector(image(_:didFinishSavingWithError:contextInfo:)), nil)
     }
     
     @objc func image(_ image: UIImage, didFinishSavingWithError error: Error?, contextInfo: UnsafeRawPointer) {

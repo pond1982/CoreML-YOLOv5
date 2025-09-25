@@ -1,8 +1,21 @@
 import Foundation
 import Vision
 import UIKit
+import ObjectiveC
 
 extension ViewController {
+    private struct AssociatedKeys {
+        static var frameKey: UInt8 = 0
+    }
+
+    var frame: Int {
+        get {
+            (objc_getAssociatedObject(self, &AssociatedKeys.frameKey) as? NSNumber)?.intValue ?? 0
+        }
+        set {
+            objc_setAssociatedObject(self, &AssociatedKeys.frameKey, NSNumber(value: newValue), .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        }
+    }
     
     func initializeModel() {
         DispatchQueue.global(qos: .userInitiated).async {
@@ -100,4 +113,3 @@ extension ViewController {
 //                }
 //        }
 }
-
