@@ -44,6 +44,15 @@ class ViewController: UIViewController, PHPickerViewControllerDelegate {
     
     var ciContext = CIContext()
     
+    // SAHI tuning parameters (can be adjusted via UI)
+    var sahiTileWidth: CGFloat = 640
+    var sahiTileHeight: CGFloat = 640
+    var sahiOverlap: CGFloat = 0.2          // 0.0 ... <1.0
+    var sahiIoUThreshold: CGFloat = 0.5     // 0.0 ... 1.0
+    var sahiScoreThreshold: Float = 0.20    // 0.0 ... 1.0
+
+    private var sahiConfigButton: UIButton!
+    
     enum MediaMode {
         case photo
         case video
@@ -62,7 +71,89 @@ class ViewController: UIViewController, PHPickerViewControllerDelegate {
         spinner.center = view.center
         spinner.hidesWhenStopped = true
         view.addSubview(spinner)
+        setupSAHIConfigButton()
         presentPhPicker()
+    }
+    
+    private func setupSAHIConfigButton() {
+        let button = UIButton(type: .system)
+        if let img = UIImage(systemName: "slider.horizontal.3") {
+            button.setImage(img, for: .normal)
+        } else {
+            button.setTitle("SAHI", for: .normal)
+        }
+        button.tintColor = .systemBlue
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.contentEdgeInsets = UIEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
+        button.addTarget(self, action: #selector(presentSAHIConfig), for: .touchUpInside)
+        view.addSubview(button)
+        NSLayoutConstraint.activate([
+            button.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            button.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12)
+        ])
+        self.sahiConfigButton = button
+    }
+    
+    @objc private func presentSAHIConfig() {
+        let alert = UIAlertController(title: "SAHI Parameters", message: "Adjust tiling and thresholds", preferredStyle: .alert)
+
+        alert.addTextField { tf in
+            tf.keyboardType = .numberPad
+            tf.placeholder = "Tile width (e.g., 640)"
+            tf.text = String(Int(self.sahiTileWidth))
+        }
+        alert.addTextField { tf in
+            tf.keyboardType = .numberPad
+            tf.placeholder = "Tile height (e.g., 640)"
+            tf.text = String(Int(self.sahiTileHeight))
+        }
+        alert.addTextField { tf in
+            tf.keyboardType = .decimalPad
+            tf.placeholder = "Overlap 0.0 - 0.9"
+            tf.text = String(format: "%.2f", self.sahiOverlap)
+        }
+        alert.addTextField { tf in
+            tf.keyboardType = .decimalPad
+            tf.placeholder = "IoU threshold 0.0 - 1.0"
+            tf.text = String(format: "%.2f", self.sahiIoUThreshold)
+        }
+        alert.addTextField { tf in
+            tf.keyboardType = .decimalPad
+            tf.placeholder = "Score threshold 0.0 - 1.0"
+            tf.text = String(format: "%.2f", self.sahiScoreThreshold)
+        }
+
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Save", style: .default, handler: { _ in
+            let widthText = alert.textFields?[0].text ?? ""
+            let heightText = alert.textFields?[1].text ?? ""
+            let overlapText = alert.textFields?[2].text ?? ""
+            let iouText = alert.textFields?[3].text ?? ""
+            let scoreText = alert.textFields?[4].text ?? ""
+
+            if let w = Int(widthText), w > 0 { self.sahiTileWidth = CGFloat(w) }
+            if let h = Int(heightText), h > 0 { self.sahiTileHeight = CGFloat(h) }
+
+            if let ov = Double(overlapText) {
+                let clamped = max(0.0, min(0.9, ov))
+                self.sahiOverlap = CGFloat(clamped)
+            }
+            if let iou = Double(iouText) {
+                let clamped = max(0.0, min(1.0, iou))
+                self.sahiIoUThreshold = CGFloat(clamped)
+            }
+            if let sc = Double(scoreText) {
+                let clamped = max(0.0, min(1.0, sc))
+                self.sahiScoreThreshold = Float(clamped)
+            }
+
+            DispatchQueue.main.async {
+                self.messageLabel.isHidden = false
+                self.messageLabel.text = "Updated SAHI: tile=\(Int(self.sahiTileWidth))x\(Int(self.sahiTileHeight)) overlap=\(String(format: "%.2f", self.sahiOverlap)) IoU=\(String(format: "%.2f", self.sahiIoUThreshold)) score=\(String(format: "%.2f", self.sahiScoreThreshold))"
+            }
+        }))
+
+        present(alert, animated: true)
     }
     
     func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
@@ -110,11 +201,12 @@ class ViewController: UIViewController, PHPickerViewControllerDelegate {
                         result.itemProvider.loadItem(forTypeIdentifier: typeIdentifier, options: nil) { (url, error) in
                             let procceessed = self?.applyProcessingOnVideo(videoURL: url as! URL, { ciImage in
                                 guard let safeSelf = self else { return nil }
+                                let tileSize = CGSize(width: safeSelf.sahiTileWidth, height: safeSelf.sahiTileHeight)
                                 let detections = safeSelf.detectOnTiles(ciImage: ciImage,
-                                                                        tileSize: CGSize(width: 640, height: 640),
-                                                                        overlap: 0.2,
-                                                                        iouThreshold: 0.5,
-                                                                        scoreThreshold: 0.20)
+                                                                        tileSize: tileSize,
+                                                                        overlap: safeSelf.sahiOverlap,
+                                                                        iouThreshold: safeSelf.sahiIoUThreshold,
+                                                                        scoreThreshold: safeSelf.sahiScoreThreshold)
                                 // Return the original CIImage and detections; drawing will be handled by the video pipeline
                                 return (ciImage, detections)
                             }, { err, processedVideoURL in

@@ -54,11 +54,12 @@ extension ViewController {
         guard let ciImage = CIImage(image: image) else { fatalError("Image failed.") }
         let start = Date()
         // Run SAHI tiling detection
+        let tileSize = CGSize(width: sahiTileWidth, height: sahiTileHeight)
         let detections = detectOnTiles(ciImage: ciImage,
-                                       tileSize: CGSize(width: 640, height: 640),
-                                       overlap: 0.2,
-                                       iouThreshold: 0.5,
-                                       scoreThreshold: 0.20)
+                                       tileSize: tileSize,
+                                       overlap: sahiOverlap,
+                                       iouThreshold: sahiIoUThreshold,
+                                       scoreThreshold: sahiScoreThreshold)
         let end = Date()
         let diff = end.timeIntervalSince(start)
         print("SAHI detect time: \(diff)")
@@ -99,3 +100,4 @@ extension ViewController {
 //                }
 //        }
 }
+
