@@ -110,28 +110,13 @@ class ViewController: UIViewController, PHPickerViewControllerDelegate {
                         result.itemProvider.loadItem(forTypeIdentifier: typeIdentifier, options: nil) { (url, error) in
                             let procceessed = self?.applyProcessingOnVideo(videoURL: url as! URL, { ciImage in
                                 guard let safeSelf = self else { return nil }
-                                guard let coreMLRequest = safeSelf.coreMLRequest else { return nil }
-                                let handler = VNImageRequestHandler(ciImage: ciImage, options: [:])
-                                do {
-                                    try handler.perform([coreMLRequest])
-                                    guard let detectResults = coreMLRequest.results as? [VNDetectedObjectObservation] else { return (ciImage, []) }
-                                    var detections: [Detection] = []
-                                    for detectResult in detectResults {
-                                        let flippedBox = CGRect(x: detectResult.boundingBox.minX, y: 1 - detectResult.boundingBox.maxY, width: detectResult.boundingBox.width, height: detectResult.boundingBox.height)
-                                        let box = VNImageRectForNormalizedRect(flippedBox, Int(ciImage.extent.width), Int(ciImage.extent.height))
-                                        let confidence = detectResult.confidence
-                                        let label = "golfball"
-                                        let detection = Detection(box: box, confidence: confidence, label: label, color: .red)
-                                        detections.append(detection)
-                                    }
-                                    if let newImage = safeSelf.drawRectOnImage(detections, ciImage) {
-                                        return (newImage.resize(as: ciImage.extent.size), detections)
-                                    }
-                                    return (ciImage, detections)
-                                } catch {
-                                    print(error)
-                                    return (ciImage, [])
-                                }
+                                let detections = safeSelf.detectOnTiles(ciImage: ciImage,
+                                                                        tileSize: CGSize(width: 640, height: 640),
+                                                                        overlap: 0.2,
+                                                                        iouThreshold: 0.5,
+                                                                        scoreThreshold: 0.20)
+                                // Return the original CIImage and detections; drawing will be handled by the video pipeline
+                                return (ciImage, detections)
                             }, { err, processedVideoURL in
                                 let end = Date()
                                 let diff = end.timeIntervalSince(start)
@@ -208,6 +193,108 @@ class ViewController: UIViewController, PHPickerViewControllerDelegate {
             newImage = uiImage
         }
         return newImage
+    }
+    
+    // MARK: - SAHI (Slicing Aided Hyper Inference)
+    // Tile the image into overlapping crops (no rescale). Each tile’s extent is reset to start at (0,0)
+    // so Vision sees a clean coordinate space; we keep the original origin to map boxes back.
+    func makeTiles(for image: CIImage,
+                   tileSize: CGSize = CGSize(width: 640, height: 640),
+                   overlap: CGFloat = 0.2) -> [(image: CIImage, origin: CGPoint)] {
+        precondition(overlap >= 0 && overlap < 1, "overlap must be in [0, 1)")
+        let stepX = max(1, Int((tileSize.width * (1 - overlap)).rounded()))
+        let stepY = max(1, Int((tileSize.height * (1 - overlap)).rounded()))
+
+        let width = Int(image.extent.width)
+        let height = Int(image.extent.height)
+        var tiles: [(CIImage, CGPoint)] = []
+
+        var y = 0
+        while y < height {
+            var x = 0
+            while x < width {
+                let w = min(Int(tileSize.width), width - x)
+                let h = min(Int(tileSize.height), height - y)
+                if w <= 0 || h <= 0 { break }
+
+                let rect = CGRect(x: x, y: y, width: w, height: h)
+                let tile = image
+                    .cropped(to: rect)
+                    .transformed(by: CGAffineTransform(translationX: -rect.origin.x, y: -rect.origin.y))
+                tiles.append((tile, CGPoint(x: rect.origin.x, y: rect.origin.y)))
+
+                x += stepX
+            }
+            y += stepY
+        }
+        return tiles
+    }
+
+    func iou(_ a: CGRect, _ b: CGRect) -> CGFloat {
+        let inter = a.intersection(b)
+        if inter.isNull || inter.isEmpty { return 0 }
+        let interArea = inter.width * inter.height
+        let unionArea = a.width * a.height + b.width * b.height - interArea
+        return unionArea > 0 ? interArea / unionArea : 0
+    }
+
+    func nonMaxSuppression(_ dets: [Detection],
+                           iouThreshold: CGFloat,
+                           scoreThreshold: Float) -> [Detection] {
+        var filtered = dets.filter { $0.confidence >= scoreThreshold }
+        filtered.sort { $0.confidence > $1.confidence }
+
+        var keep: [Detection] = []
+        while let first = filtered.first {
+            keep.append(first)
+            filtered.removeFirst()
+            filtered = filtered.filter { iou(first.box, $0.box) < iouThreshold }
+        }
+        return keep
+    }
+
+    // Run the Core ML + Vision request on each tile and map boxes back to full-image coordinates,
+    // then merge with NMS. Returns final detections in full-image coordinate space.
+    func detectOnTiles(ciImage: CIImage,
+                       tileSize: CGSize = CGSize(width: 640, height: 640),
+                       overlap: CGFloat = 0.2,
+                       iouThreshold: CGFloat = 0.5,
+                       scoreThreshold: Float = 0.20) -> [Detection] {
+        guard let coreMLRequest = coreMLRequest else { return [] }
+
+        var allDetections: [Detection] = []
+        let tiles = makeTiles(for: ciImage, tileSize: tileSize, overlap: overlap)
+
+        for (tileImage, origin) in tiles {
+            let handler = VNImageRequestHandler(ciImage: tileImage, options: [:])
+            do {
+                try handler.perform([coreMLRequest])
+                guard let results = coreMLRequest.results as? [VNDetectedObjectObservation] else { continue }
+                for r in results {
+                    // Flip Y, convert to pixels in the tile’s coordinate space
+                    let flipped = CGRect(x: r.boundingBox.minX,
+                                         y: 1 - r.boundingBox.maxY,
+                                         width: r.boundingBox.width,
+                                         height: r.boundingBox.height)
+                    let inTile = VNImageRectForNormalizedRect(flipped,
+                                                              Int(tileImage.extent.width),
+                                                              Int(tileImage.extent.height))
+                    // Map back to full image by offsetting with tile origin
+                    let inFull = inTile.offsetBy(dx: origin.x, dy: origin.y)
+
+                    allDetections.append(Detection(box: inFull,
+                                                   confidence: r.confidence,
+                                                   label: "golfball",
+                                                   color: .red))
+                }
+            } catch {
+                print("Tile detect error: \(error)")
+            }
+        }
+
+        return nonMaxSuppression(allDetections,
+                                 iouThreshold: iouThreshold,
+                                 scoreThreshold: scoreThreshold)
     }
 }
 

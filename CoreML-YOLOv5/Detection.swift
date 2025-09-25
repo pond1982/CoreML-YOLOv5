@@ -51,47 +51,24 @@ extension ViewController {
     }
     
     func detect(image:UIImage) {
-        guard let coreMLRequest = coreMLRequest else {fatalError("Model initialization failed.")}
-        guard let ciImage = CIImage(image: image) else {fatalError("Image failed.")}
-        let handler = VNImageRequestHandler(ciImage: ciImage, options: [:])
-
-        do {
-            let start = Date()
-            try handler.perform([coreMLRequest])
-            
-            guard let detectResults = coreMLRequest.results as? [VNDetectedObjectObservation] else { return }
-            
-            // モデルの実行時間を計算
-            let end = Date()
-            let diff = end.timeIntervalSince(start)
-            print(diff)
-            
-            // 結果（複数の検出ボックス）をbox,label,confidenceのDetectionというstructでラップ
-            var detections:[Detection] = []
-            for detectResult in detectResults {
-                // 結果の座標は下が０なので反転させる
-                let flippedBox = CGRect(x: detectResult.boundingBox.minX, y: 1 - detectResult.boundingBox.maxY, width: detectResult.boundingBox.width, height: detectResult.boundingBox.height)
-                
-                // ０〜１で返ってきた座標を画像の座標に非正規化
-                let box = VNImageRectForNormalizedRect(flippedBox, Int(image.size.width), Int(image.size.height))
-                let confidence = detectResult.confidence
-                // Assume a single class "golfball" for all detections
-                let label = "golfball"
-                let detection = Detection(box: box, confidence: confidence, label: label, color: .red)
-                detections.append(detection)
+        guard let ciImage = CIImage(image: image) else { fatalError("Image failed.") }
+        let start = Date()
+        // Run SAHI tiling detection
+        let detections = detectOnTiles(ciImage: ciImage,
+                                       tileSize: CGSize(width: 640, height: 640),
+                                       overlap: 0.2,
+                                       iouThreshold: 0.5,
+                                       scoreThreshold: 0.20)
+        let end = Date()
+        let diff = end.timeIntervalSince(start)
+        print("SAHI detect time: \(diff)")
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            if let newImage = self.drawRectOnImage(detections, ciImage) {
+                self.imageView.image = UIImage(ciImage: newImage)
+            } else {
+                self.imageView.image = UIImage(ciImage: ciImage)
             }
-            DispatchQueue.main.async { [weak self] in
-                guard let safeSelf = self else { return }
-                //　ボックスを画像に描画
-                let newImage = safeSelf.drawRectOnImage(detections, CIImage(image:image)!)
-                let ind = Date()
-                let idiff = ind.timeIntervalSince(start)
-                print("draw:\(idiff)")
-
-                safeSelf.imageView.image = UIImage(ciImage: newImage!)
-            }
-        } catch let error {
-            print(error)
         }
     }
 //    
@@ -122,4 +99,3 @@ extension ViewController {
 //                }
 //        }
 }
-
