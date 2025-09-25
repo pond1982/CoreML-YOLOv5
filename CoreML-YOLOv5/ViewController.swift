@@ -9,6 +9,7 @@ import UIKit
 import PhotosUI
 import Vision
 import AVKit
+import Photos
 
 class ViewController: UIViewController, PHPickerViewControllerDelegate {
 
@@ -24,6 +25,7 @@ class ViewController: UIViewController, PHPickerViewControllerDelegate {
 
     var mediaMode: MediaMode = .video
     var initializeTimer: Timer?
+    var lastProcessedVideoURL: URL? // Stores the most recent processed video for saving
     
     lazy var coreMLRequest:VNCoreMLRequest? = {
         do {
@@ -320,12 +322,15 @@ class ViewController: UIViewController, PHPickerViewControllerDelegate {
                                 let diff = end.timeIntervalSince(start)
                                 print(diff)
                                 let player = AVPlayer(url: processedVideoURL!)
-                                DispatchQueue.main.async {
-                                    self?.messageLabel.isHidden = true
-                                    self?.spinner.stopAnimating()
+                                DispatchQueue.main.async { [weak self] in
+                                    guard let self = self else { return }
+                                    self.messageLabel.isHidden = true
+                                    self.spinner.stopAnimating()
+                                    self.lastProcessedVideoURL = processedVideoURL
                                     let controller = AVPlayerViewController()
                                     controller.player = player
-                                    self?.present(controller, animated: true) {
+                                    self.addSaveButton(to: controller)
+                                    self.present(controller, animated: true) {
                                         player.play()
                                     }
                                 }
@@ -399,6 +404,88 @@ class ViewController: UIViewController, PHPickerViewControllerDelegate {
         return newImage
     }
     
+    // MARK: - Save Processed Video
+    func addSaveButton(to controller: AVPlayerViewController) {
+        guard let overlay = controller.contentOverlayView else { return }
+        let button = UIButton(type: .system)
+        button.setTitle("Save", for: .normal)
+        button.titleLabel?.font = UIFont.boldSystemFont(ofSize: 17)
+        button.backgroundColor = UIColor.systemBackground.withAlphaComponent(0.85)
+        button.setTitleColor(.label, for: .normal)
+        button.layer.cornerRadius = 8
+        button.contentEdgeInsets = UIEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.addTarget(self, action: #selector(saveProcessedVideoTapped), for: .touchUpInside)
+        overlay.addSubview(button)
+        let guide = overlay.safeAreaLayoutGuide
+        NSLayoutConstraint.activate([
+            button.trailingAnchor.constraint(equalTo: guide.trailingAnchor, constant: -16),
+            button.bottomAnchor.constraint(equalTo: guide.bottomAnchor, constant: -16)
+        ])
+    }
+
+    @objc func saveProcessedVideoTapped() {
+        guard let url = lastProcessedVideoURL else {
+            let ac = UIAlertController(title: "No Video", message: "There is no processed video to save.", preferredStyle: .alert)
+            ac.addAction(UIAlertAction(title: "OK", style: .default))
+            present(ac, animated: true)
+            return
+        }
+        requestPhotoLibraryAuthorization { granted in
+            DispatchQueue.main.async {
+                if !granted {
+                    let ac = UIAlertController(title: "Permission Needed", message: "Please allow photo library access to save videos.", preferredStyle: .alert)
+                    ac.addAction(UIAlertAction(title: "OK", style: .default))
+                    self.present(ac, animated: true)
+                    return
+                }
+                PHPhotoLibrary.shared().performChanges({
+                    PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: url)
+                }) { success, error in
+                    DispatchQueue.main.async {
+                        if let error = error {
+                            let ac = UIAlertController(title: "Save error", message: error.localizedDescription, preferredStyle: .alert)
+                            ac.addAction(UIAlertAction(title: "OK", style: .default))
+                            self.present(ac, animated: true)
+                        } else {
+                            let ac = UIAlertController(title: "Saved!", message: "Video saved to your Photos.", preferredStyle: .alert)
+                            ac.addAction(UIAlertAction(title: "OK", style: .default))
+                            self.present(ac, animated: true)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func requestPhotoLibraryAuthorization(completion: @escaping (Bool) -> Void) {
+        if #available(iOS 14, *) {
+            let status = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+            switch status {
+            case .authorized, .limited:
+                completion(true)
+            case .notDetermined:
+                PHPhotoLibrary.requestAuthorization(for: .addOnly) { newStatus in
+                    completion(newStatus == .authorized || newStatus == .limited)
+                }
+            default:
+                completion(false)
+            }
+        } else {
+            let status = PHPhotoLibrary.authorizationStatus()
+            switch status {
+            case .authorized:
+                completion(true)
+            case .notDetermined:
+                PHPhotoLibrary.requestAuthorization { newStatus in
+                    completion(newStatus == .authorized)
+                }
+            default:
+                completion(false)
+            }
+        }
+    }
+
 
 }
 
